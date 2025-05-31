@@ -316,7 +316,7 @@ with st.sidebar:
 def load_model():
     """Load YOLO model with caching"""
     try:
-        model = YOLO('best3.pt')
+        model = YOLO('rokok13.pt')
         return model
     except Exception as e:
         st.error(f"Failed to load model: {str(e)}")
@@ -333,23 +333,32 @@ if model is None:
 def detect_image(image):
     """Process image detection with error handling"""
     try:
-        # Image preprocessing
-        if len(image.shape) == 2:
-            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-        elif image.shape[2] == 4:
-            image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
-        elif image.shape[2] == 3:
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-        # Resize for consistent processing
-        resized_image = cv2.resize(image, (1280, 720))
+        # Ensure image is in correct format (RGB)
+        if isinstance(image, Image.Image):
+            # Convert PIL Image to numpy array
+            image = np.array(image)
         
-        # Run detection
-        results = model(resized_image, iou=iou_threshold, conf=confidence_threshold)
+        # Handle different image formats
+        if len(image.shape) == 2:
+            # Grayscale to RGB
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        elif len(image.shape) == 3:
+            if image.shape[2] == 4:
+                # RGBA to RGB
+                image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
+            elif image.shape[2] == 3:
+                # Assume it's already RGB, no conversion needed
+                pass
+        
+        # Run detection (YOLO expects RGB format)
+        results = model(image, iou=iou_threshold, conf=confidence_threshold)
         
         # Get annotated image
+        annotated_image = None
         for result in results:
             annotated_image = result.plot()
+            # Convert BGR back to RGB for display
+            annotated_image = cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB)
         
         return annotated_image, results
     except Exception as e:
@@ -412,17 +421,20 @@ def video_capture(camera_idx=0):
 tab1, tab2, tab3 = st.tabs(["📷 Live Camera", "🎞️ Video Upload", "🖼️ Image Analysis"])
 
 with tab1:
-    st.markdown('<div class="detection-card">', unsafe_allow_html=True)
     st.markdown("### 📷 Real-Time Detection")
     st.markdown("Start live camera detection with real-time object recognition")
+
+    # Menyusun tombol di tengah menggunakan 3 kolom
     
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        if st.button("▶️ Start Live Detection", key="start_camera", help="Begin real-time object detection"):
-            camera_idx = camera_options[selected_camera]
-            video_capture(camera_idx)
-    
-    st.markdown('</div>', unsafe_allow_html=True)
+    # Tombol berada di tengah kolom
+    center_button = st.button("▶️ Start Live Detection", key="start_camera", help="Begin real-time object detection")
+    if center_button:
+        camera_idx = camera_options[selected_camera]
+        video_capture(camera_idx)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+
 
 with tab2:
     st.markdown('<div class="detection-card">', unsafe_allow_html=True)
@@ -500,69 +512,119 @@ with tab3:
     )
     
     if uploaded_image is not None:
-        file_bytes = np.asarray(bytearray(uploaded_image.read()), dtype=np.uint8)
-        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        # Convert to PIL Image for cropping
+        pil_image = Image.open(uploaded_image)
         
+        # Cropping options
+        st.markdown("#### ✂️ Image Cropping")
         col1, col2 = st.columns(2)
-        
         with col1:
-            st.markdown("#### 📄 Original Image")
-            st.markdown('<div class="image-container">', unsafe_allow_html=True)
-            st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with col2:
-            if st.button("🔍 Analyze Image", key="analyze_image", help="Start object detection analysis"):
-                with st.spinner("🤖 AI is analyzing your image..."):
-                    annotated_image, results = detect_image(image)
-                    
-                    if annotated_image is not None:
-                        st.markdown("#### 🎯 Detection Results")
-                        st.markdown('<div class="image-container">', unsafe_allow_html=True)
-                        st.image(annotated_image, channels="RGB", use_container_width=True)
-                        st.markdown('</div>', unsafe_allow_html=True)
+            aspect_choice = st.radio(
+                "Crop Aspect Ratio",
+                ["Free", "1:1", "16:9", "4:3"],
+                horizontal=True
+            )
         
-        # Detection results summary
-        if uploaded_image is not None:
-            st.markdown("#### 📊 Detection Summary")
+        aspect_dict = {
+            "Free": None,
+            "1:1": (1, 1),
+            "16:9": (16, 9),
+            "4:3": (4, 3)
+        }
+        
+        with col2:
+            box_color = st.color_picker(
+                "Crop Box Color", 
+                "#1f6feb",
+                help="Choose the color of the crop selection box"
+            )
+        
+        # Display the cropper
+        st.markdown("**Adjust the crop area:**")
+        cropped_img = st_cropper(
+            pil_image,
+            realtime_update=True,
+            box_color=box_color,
+            aspect_ratio=aspect_dict[aspect_choice],
+            return_type="box"  # Returns coordinates
+        )
+        
+        # Convert cropped coordinates to image
+        if cropped_img is not None:
+            left, top, width, height = cropped_img["left"], cropped_img["top"], cropped_img["width"], cropped_img["height"]
+            right = left + width
+            bottom = top + height
             
-            # Run detection for summary
-            results = model(image, iou=iou_threshold, conf=confidence_threshold)
+            # Perform the actual crop
+            cropped_pil = pil_image.crop((left, top, right, bottom))
             
-            for result in results:
-                if len(result.boxes) > 0:
-                    detection_data = []
-                    for box in result.boxes:
-                        cls_id = int(box.cls.item())
-                        conf = box.conf.item()
-                        cls_name = result.names[cls_id]
-                        detection_data.append((cls_name, conf))
-                    
-                    # Group detections
-                    detection_summary = {}
-                    for obj, conf in detection_data:
-                        if obj not in detection_summary:
-                            detection_summary[obj] = []
-                        detection_summary[obj].append(conf)
-                    
-                    # Display results
-                    for obj, confidences in detection_summary.items():
-                        avg_conf = sum(confidences) / len(confidences)
-                        count = len(confidences)
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("#### 📄 Original Image")
+                st.markdown('<div class="image-container">', unsafe_allow_html=True)
+                st.image(pil_image, use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+            with col2:
+                st.markdown("#### ✂️ Cropped Image")
+                st.markdown('<div class="image-container">', unsafe_allow_html=True)
+                st.image(cropped_pil, use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+                
+                if st.button("🔍 Analyze Cropped Image", key="analyze_cropped", help="Start object detection on cropped area"):
+                    with st.spinner("🤖 AI is analyzing your cropped image..."):
+                        # Use the improved detect_image function
+                        annotated_image, results = detect_image(cropped_pil)
+                        annotated_image = cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB)
                         
-                        st.markdown(f'''
-                            <div class="detection-result">
-                                <span class="detection-object">{obj}</span> 
-                                <span style="color: #8b949e;">×{count}</span> - 
-                                <span class="detection-confidence">{avg_conf:.1%} confidence</span>
-                            </div>
-                        ''', unsafe_allow_html=True)
-                else:
-                    st.markdown('''
-                        <div class="detection-result">
-                            <span style="color: #8b949e;">No objects detected</span>
-                        </div>
-                    ''', unsafe_allow_html=True)
+                        if annotated_image is not None:
+                            st.markdown("#### 🎯 Detection Results")
+                            st.markdown('<div class="image-container">', unsafe_allow_html=True)
+                            st.image(annotated_image, use_container_width=True)
+                            st.markdown('</div>', unsafe_allow_html=True)
+                            
+                            # Display detection summary
+                            st.markdown("#### 📊 Detection Summary")
+                            
+                            detection_found = False
+                            for result in results:
+                                if len(result.boxes) > 0:
+                                    detection_found = True
+                                    detection_data = []
+                                    for box in result.boxes:
+                                        cls_id = int(box.cls.item())
+                                        conf = box.conf.item()
+                                        cls_name = result.names[cls_id]
+                                        detection_data.append((cls_name, conf))
+                                    
+                                    # Group detections
+                                    detection_summary = {}
+                                    for obj, conf in detection_data:
+                                        if obj not in detection_summary:
+                                            detection_summary[obj] = []
+                                        detection_summary[obj].append(conf)
+                                    
+                                    # Display results
+                                    for obj, confidences in detection_summary.items():
+                                        avg_conf = sum(confidences) / len(confidences)
+                                        count = len(confidences)
+                                        
+                                        st.markdown(f'''
+                                            <div class="detection-result">
+                                                <span class="detection-object">{obj}</span> 
+                                                <span style="color: #8b949e;">×{count}</span> - 
+                                                <span class="detection-confidence">{avg_conf:.1%} confidence</span>
+                                            </div>
+                                        ''', unsafe_allow_html=True)
+                            
+                            if not detection_found:
+                                st.markdown('''
+                                    <div class="detection-result">
+                                        <span style="color: #8b949e;">No objects detected in cropped area</span>
+                                    </div>
+                                ''', unsafe_allow_html=True)
+                        else:
+                            st.error("❌ Failed to process the cropped image")
     
     st.markdown('</div>', unsafe_allow_html=True)
 
